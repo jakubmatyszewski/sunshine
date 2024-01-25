@@ -3,7 +3,7 @@ import logging
 import logging.handlers
 import requests
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from typing import TypedDict
 
@@ -31,51 +31,45 @@ class Coordinates(TypedDict):
 
 
 WARSAW: Coordinates = {"lat": 52.2297, "lon": 21.0122}
-API_KEY = os.getenv("API_KEY")
-URL = "https://api.openweathermap.org/data/2.5/onecall?lat={lat}&lon={lon}&appid={key}"
+URL = "https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=sunrise,sunset,daylight_duration&timezone=auto&start_date={yday}&end_date={tday}"
 
 
-def call_for_data(cords: dict[str, float] = WARSAW) -> dict:
+def prepare_params(cords: Coordinates = WARSAW) -> dict:
+    TODAY = datetime.now().strftime("%Y-%m-%d")
+    YESTERDAY = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    params = {**cords, "tday": TODAY, "yday": YESTERDAY}
+    return params
+
+
+def call_for_data(params: dict) -> dict:
     log.info("Fetch data from openweathermap.org")
-    url = URL.format(**{**cords, "key": API_KEY})
-    r = requests.get(url)
+    r = requests.get(URL.format(**params))
     r.raise_for_status()
     return r.json()
 
 
-def get_sun_details(data: dict) -> tuple[int, int, int]:
+def get_sun_details(data: dict) -> tuple[float, float]:
     """Data here is represented as unix time integers."""
-    d = data["current"]
-    sunrise = d["sunrise"]
-    sunset = d["sunset"]
-    day_length = sunset - sunrise
-    return sunrise, sunset, day_length
+    d = data["daily"]
+    sunrise = d["sunrise"][1].split("T")[1]
+    sunset = d["sunset"][1].split("T")[1]
+    yesterday_length, today_length = d["daylight_duration"]
+    return sunrise, sunset, today_length, yesterday_length
 
 
-def save(day_length: int) -> None:
-    with open(f"{dir}/data", "w+") as f:
-        f.write(f"{day_length}")
-    log.info("Today's data is saved!")
+def compute_difference(today_day_length: float, yesterday_day_length: float) -> str:
+    diff = today_day_length - yesterday_day_length
 
-
-def compute_difference(current_day_length: int) -> str:
-    try:
-        with open(f"{dir}/data") as f:
-            archive = int(f.read())
-    except Exception as e:
-        log.error("Failed to read yesterday's data!")
-        return ""
+    diff_m = int(diff / 60)  # minutes
+    diff_s = int(diff % 60)  # seconds
+    if diff > 0:
+        return (
+            f"Today is {diff_m} minute(s) and {diff_s} second(s) longer than yesterday."
+        )
+    elif diff < 0:
+        return f"Today is {diff_m} minute(s) and {diff_s} second(s) shorter than yesterday."
     else:
-        diff = current_day_length - archive
-
-        diff_m = int(diff / 60)  # minutes
-        diff_s = diff % 60  # seconds
-        if diff > 0:
-            return f"Today is {diff_m} minute(s) and {diff_s} second(s) longer than yesterday."
-        elif diff < 0:
-            return f"Today is {diff_m} minute(s) and {diff_s} second(s) shorter than yesterday."
-        else:
-            return f"It's equinox. Today will be as long as yesterday."
+        return f"It's equinox. Today will be as long as yesterday."
 
 
 def send_info(payload: str) -> None:
@@ -91,18 +85,13 @@ def send_info(payload: str) -> None:
 
 def main() -> None:
     log.info(datetime.strftime(datetime.now(), "%d/%m/%Y"))
-    if not API_KEY:
-        log.error("openweathermap API_KEY is missing.")
-        sys.exit(1)
-    data = call_for_data()
+    data = call_for_data(prepare_params())
     log.info("Data collected.")
-    sunrise, sunset, day_len = get_sun_details(data)
-    diff = compute_difference(day_len)
-    save(day_len)
+    sunrise, sunset, day_len, yday_len = get_sun_details(data)
+    diff = compute_difference(day_len, yday_len)
     msg = f"""\
            Siemanko!
-           Today sun rises at {datetime.strftime(datetime.fromtimestamp(sunrise), "%H:%M:%S")}\
-           and sets at {datetime.strftime(datetime.fromtimestamp(sunset), "%H:%M:%S")}.
+           Today sun rises at {sunrise} and sets at {sunset}.
            {diff}
            Smacznej kawusi!
            """.split()
